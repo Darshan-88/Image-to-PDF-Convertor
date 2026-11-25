@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Image to PDF · Darshan</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f2f5f4;color:#172c28;font:16px/1.5 system-ui,sans-serif}main{max-width:800px;margin:55px auto;padding:0 20px}h1{font:600 clamp(40px,7vw,64px)/1.1 Georgia,serif;letter-spacing:-.04em;margin:0}p{color:#43615a}.card{background:white;border:1px solid #cddad5;border-radius:20px;padding:clamp(18px,4vw,32px);margin-top:28px}.drop{padding:28px 12px;text-align:center;border:2px dashed #86a99d;border-radius:12px;background:#f4faf7}.drop p{margin:6px 0 0;font-size:14px}button,select{font:inherit;border-radius:8px;padding:8px 13px;border:1px solid #a6beb4;background:white;color:#174b3d;cursor:pointer}button.primary{background:#14543f;color:white;border-color:#14543f}button:disabled{opacity:.45;cursor:default}ol{padding:0;list-style:none}.row{display:flex;align-items:center;gap:8px;border-bottom:1px solid #e2eae5;padding:10px 0;flex-wrap:wrap}.row img{width:48px;height:48px;object-fit:contain;background:#f2f5f4}.name{flex:1;min-width:100px;overflow-wrap:anywhere}.actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}footer{margin-top:24px;color:#506c62}footer a{color:inherit}#status{margin-bottom:0}button:focus-visible,select:focus-visible{outline:3px solid #e49c28}
+</style><main><h1>Image to PDF</h1><p>Arrange your photos, then download them as a single PDF. Each image gets its own page.</p><section class="card"><div class="drop" id="drop"><button id="choose">Choose images</button><input hidden id="files" type="file" accept="image/jpeg,image/png,image/webp" multiple><p>or drop JPG, PNG or WebP files here</p></div><ol id="list" aria-label="PDF page order"></ol><div class="actions"><label>Page size <select id="size"><option>A4</option><option>Letter</option></select></label><button class="primary" id="save" disabled>Download PDF</button></div><p role="status" id="status">Your images stay on this device.</p></section><footer>Built by Darshan · <a href="mailto:darshan712871@gmail.com">Contact</a></footer></main>
+<script>
+const el=id=>document.getElementById(id);
+const pages=[];
+let busy=false;
+function render(){
+ el('list').replaceChildren();el('save').disabled=busy||!pages.length;el('choose').disabled=busy;el('size').disabled=busy;
+ pages.forEach((p,i)=>{
+ const li=document.createElement('li');li.className='row';
+ const img=new Image();img.src=p.url;img.alt='';const label=document.createElement('span');label.className='name';label.textContent=(i+1)+'. '+p.file.name;li.append(img,label);
+ for(const [title,delta] of [['Up',-1],['Down',1],['Remove',0]]){
+ const b=document.createElement('button');b.textContent=title;b.setAttribute('aria-label',title+' page '+(i+1));b.disabled=busy||i+delta<0||i+delta>=pages.length;
+ b.onclick=()=>{if(delta)[pages[i],pages[i+delta]]=[pages[i+delta],pages[i]];else URL.revokeObjectURL(pages.splice(i,1)[0].url);el('status').textContent=pages.length+' pages selected.';render()};li.append(b)
+ }el('list').append(li)
+ });
+}
+function add(files){
+ if(busy)return;let skipped=0;
+ for(const file of files){if(!['image/png','image/jpeg','image/webp'].includes(file.type)){skipped++;continue}pages.push({file,url:URL.createObjectURL(file)})}
+ render();el('status').textContent=pages.length+' pages selected.'+(skipped?' Unsupported files skipped: '+skipped+'.':'');
+}
+el('choose').onclick=()=>el('files').click();el('files').onchange=e=>{add(e.target.files);e.target.value=''};
+el('drop').ondragover=e=>e.preventDefault();el('drop').ondrop=e=>{e.preventDefault();add(e.dataTransfer.files)};
+async function jpeg(p){
+ const img=new Image();img.src=p.url;await img.decode();
+ const scale=Math.min(1,2400/Math.max(img.naturalWidth,img.naturalHeight)),c=document.createElement('canvas');
+ c.width=Math.max(1,Math.round(img.naturalWidth*scale));c.height=Math.max(1,Math.round(img.naturalHeight*scale));
+ const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(img,0,0,c.width,c.height);
+ const blob=await new Promise(resolve=>c.toBlob(resolve,'image/jpeg',.92));if(!blob)throw Error('Image conversion failed');return {w:c.width,h:c.height,bytes:new Uint8Array(await blob.arrayBuffer())};
+}
+async function buildPdf(items,size){
+ const chunks=[],offset=[0],encoder=new TextEncoder();let length=0;
+ function write(data){const bytes=typeof data==='string'?encoder.encode(data):data;chunks.push(bytes);length+=bytes.length}
+ function obj(id){offset[id]=length;write(id+' 0 obj\n')}
+ write('%PDF-1.4\n');obj(1);write('<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');obj(2);
+ write('<< /Type /Pages /Count '+items.length+' /Kids ['+items.map((_,i)=>(3+i*3)+' 0 R').join(' ')+'] >>\nendobj\n');
+ for(const [i,p] of items.entries()){
+ el('status').textContent='Converting page '+(i+1)+' of '+items.length+'…';
+ let photo;try{photo=await jpeg(p)}catch{throw Error('Could not read '+p.file.name+'. Remove it or choose another image.')}
+ const {w,h,bytes}=photo,id=3+i*3;let [pw,ph]=size==='A4'?[595.28,841.89]:[612,792];if(w>h)[pw,ph]=[ph,pw];
+ const ratio=Math.min((pw-48)/w,(ph-48)/h),dw=w*ratio,dh=h*ratio;
+ const cmd='q '+[dw,0,0,dh,(pw-dw)/2,(ph-dh)/2].map(n=>n.toFixed(3)).join(' ')+' cm /Photo Do Q\n';
+ obj(id);write('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 '+pw+' '+ph+'] /Resources << /XObject << /Photo '+(id+1)+' 0 R >> >> /Contents '+(id+2)+' 0 R >>\nendobj\n');
+ obj(id+1);write('<< /Type /XObject /Subtype /Image /Width '+w+' /Height '+h+' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+bytes.length+' >>\nstream\n');write(bytes);write('\nendstream\nendobj\n');
+ obj(id+2);write('<< /Length '+cmd.length+' >>\nstream\n'+cmd+'endstream\nendobj\n');
+ }
+ const start=length;write('xref\n0 '+offset.length+'\n0000000000 65535 f \n');for(const n of offset.slice(1))write(String(n).padStart(10,'0')+' 00000 n \n');
+ write('trailer\n<< /Size '+offset.length+' /Root 1 0 R >>\nstartxref\n'+start+'\n%%EOF\n');return new Blob(chunks,{type:'application/pdf'});
+}
+el('save').onclick=async()=>{busy=true;render();try{const blob=await buildPdf(pages,el('size').value),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='photos.pdf';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(link.href),60000);el('status').textContent='PDF ready. Download started.'}catch(e){el('status').textContent=e.message}finally{busy=false;render()}};
+</script></html>
